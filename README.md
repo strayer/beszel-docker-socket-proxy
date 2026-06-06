@@ -3,6 +3,8 @@
 A minimal, filtering Docker socket proxy for the [Beszel](https://beszel.dev)
 monitoring agent.
 
+[![CI](https://github.com/strayer/beszel-docker-socket-proxy/actions/workflows/ci.yaml/badge.svg)](https://github.com/strayer/beszel-docker-socket-proxy/actions/workflows/ci.yaml)
+
 ```
 ghcr.io/strayer/beszel-docker-socket-proxy
 ```
