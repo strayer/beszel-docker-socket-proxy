@@ -1,0 +1,24 @@
+FROM --platform=$BUILDPLATFORM golang:1.26.4@sha256:68cb6d68bed024785b69195b89af7ac7a444f27791435f98647edff595aa0479 AS build
+
+ARG TARGETOS TARGETARCH
+
+WORKDIR /src
+
+COPY go.mod ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /proxy ./cmd/proxy/
+
+FROM scratch
+
+COPY --from=build /proxy /proxy
+
+# Runs as root inside the container so it can read the Docker socket
+# regardless of the host's docker GID; deploy with cap_drop: ALL,
+# read_only and no-new-privileges (see README).
+
+EXPOSE 2375
+
+ENTRYPOINT ["/proxy"]
