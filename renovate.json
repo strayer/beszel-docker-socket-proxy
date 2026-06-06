@@ -1,0 +1,29 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":disableRateLimiting",
+    "docker:pinDigests"
+  ],
+  "packageRules": [
+    {
+      "groupName": "go",
+      "matchDepNames": ["go", "golang"]
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["go"],
+      "rangeStrategy": "bump"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Bump the e2e fixture image pinned in the test harness",
+      "fileMatch": ["^e2e/harness_test\\.go$"],
+      "matchStrings": [
+        "// renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\nconst fixtureImage = \"[^:\"]+:(?<currentValue>[^\"]+)\""
+      ]
+    }
+  ]
+}
