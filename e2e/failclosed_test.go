@@ -3,15 +3,11 @@
 package e2e
 
 import (
-	"archive/tar"
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -19,31 +15,34 @@ import (
 
 const mockMarker = "MOCK-SECRET-BYTES"
 
+// mockHTTP dials the proxy-on-mock's unix listen socket.
+var mockHTTP *http.Client
+
 // setupMockProxy builds the mockdaemon image, runs it with its unix socket
-// on a shared volume, and starts a second proxy instance from PROXY_IMAGE
-// with SOCKET_PATH pointed at the mock. Returns the proxy's base URL.
+// in the shared socket dir, and starts a second proxy instance with
+// SOCKET_PATH pointed at the mock and its own listen socket alongside.
+// Returns the base URL for mockHTTP.
 func setupMockProxy(t *testing.T) string {
 	t.Helper()
 
 	image := "bsp-e2e-mockdaemon:" + nonce
-	volume := "bsp-e2e-mock-" + nonce
-	buildMockImage(t, image)
+	if err := buildScratchImage("./mockdaemon", image); err != nil {
+		t.Fatalf("build mockdaemon image: %v", err)
+	}
 	t.Cleanup(func() {
 		_ = docker.call("DELETE", "/images/"+image+"?force=true", nil, nil, 200)
 	})
 
-	if err := docker.call("POST", "/volumes/create", map[string]any{"Name": volume}, nil, 201); err != nil {
-		t.Fatalf("create volume: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = docker.call("DELETE", "/volumes/"+volume, nil, nil, 204)
-	})
+	// Mock daemon and proxy-on-mock share the same socket dir as the main
+	// harness; distinct filenames keep them apart.
+	const mockSock = proxySockDir + "/mock.sock"
+	const listenSock = proxySockDir + "/proxy.sock"
 
 	mockID, err := startContainer("bsp-e2e-mockdaemon-"+nonce, map[string]any{
 		"Image": image,
-		"Env":   []string{"MOCK_SOCKET=/shared/mock.sock"},
+		"Env":   []string{"MOCK_SOCKET=" + mockSock},
 		"HostConfig": map[string]any{
-			"Binds": []string{volume + ":/shared"},
+			"Binds": []string{sockMount},
 		},
 	})
 	if err != nil {
@@ -54,15 +53,17 @@ func setupMockProxy(t *testing.T) string {
 	})
 
 	proxyID, err := startContainer("bsp-e2e-proxymock-"+nonce, map[string]any{
-		"Image":        os.Getenv("PROXY_IMAGE"),
-		"Env":          []string{"SOCKET_PATH=/shared/mock.sock"},
-		"ExposedPorts": map[string]any{"2375/tcp": map[string]any{}},
+		"Image": os.Getenv("PROXY_IMAGE"),
+		"Env": []string{
+			"SOCKET_PATH=" + mockSock,
+			"LISTEN_ADDR=" + listenSock,
+			"LISTEN_SOCKET_MODE=0666",
+		},
 		"HostConfig": map[string]any{
-			"Binds":          []string{volume + ":/shared"},
+			"Binds":          []string{sockMount},
 			"CapDrop":        []string{"ALL"},
 			"ReadonlyRootfs": true,
 			"SecurityOpt":    []string{"no-new-privileges:true"},
-			"PortBindings":   map[string]any{"2375/tcp": []map[string]string{{"HostIp": "127.0.0.1", "HostPort": ""}}},
 		},
 	})
 	if err != nil {
@@ -72,13 +73,10 @@ func setupMockProxy(t *testing.T) string {
 		_ = docker.call("DELETE", "/containers/"+proxyID+"?force=true", nil, nil, 204)
 	})
 
-	port, err := mappedPort(proxyID, "2375/tcp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	base := "http://127.0.0.1:" + port
+	base := "http://proxy"
+	mockHTTP = unixClient(dialPath("proxy.sock"), 60*time.Second)
 	if err := waitFor("proxy-on-mock ready", func() error {
-		resp, err := proxyHTTP.Get(base + "/version")
+		resp, err := mockHTTP.Get(base + "/version")
 		if err != nil {
 			return err
 		}
@@ -93,84 +91,13 @@ func setupMockProxy(t *testing.T) string {
 	return base
 }
 
-// buildMockImage cross-compiles e2e/mockdaemon for the daemon's platform
-// and packs the static binary into a FROM scratch image via the Engine
-// API, so no Go toolchain image is ever pulled.
-func buildMockImage(t *testing.T, tag string) {
-	t.Helper()
-
-	var ver struct{ Os, Arch string }
-	if err := docker.call("GET", "/version", nil, &ver, 200); err != nil {
-		t.Fatalf("daemon version: %v", err)
-	}
-
-	bin := filepath.Join(t.TempDir(), "mockdaemon")
-	cmd := exec.Command("go", "build", "-o", bin, "./mockdaemon")
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+ver.Os, "GOARCH="+ver.Arch)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build mockdaemon: %v\n%s", err, out)
-	}
-	binData, err := os.ReadFile(bin)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	dockerfile := "FROM scratch\nCOPY mockdaemon /mockdaemon\nENTRYPOINT [\"/mockdaemon\"]\n"
-	var ctx bytes.Buffer
-	tw := tar.NewWriter(&ctx)
-	for _, f := range []struct {
-		name string
-		mode int64
-		data []byte
-	}{
-		{"Dockerfile", 0o644, []byte(dockerfile)},
-		{"mockdaemon", 0o755, binData},
-	} {
-		if err := tw.WriteHeader(&tar.Header{Name: f.name, Mode: f.mode, Size: int64(len(f.data))}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tw.Write(f.data); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, "http://docker/build?t="+tag, &ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/x-tar")
-	resp, err := docker.http.Do(req)
-	if err != nil {
-		t.Fatalf("image build: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	// The build endpoint streams JSON messages; failures appear as
-	// {"error": ...} lines rather than a non-200 status.
-	dec := json.NewDecoder(resp.Body)
-	for {
-		var msg struct{ Error string }
-		if err := dec.Decode(&msg); err != nil {
-			break
-		}
-		if msg.Error != "" {
-			t.Fatalf("image build: %s", msg.Error)
-		}
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("image build: status %d", resp.StatusCode)
-	}
-}
-
 func mockGet(t *testing.T, base, path string) (*http.Response, []byte) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, base+path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := proxyHTTP.Do(req)
+	resp, err := mockHTTP.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", path, err)
 	}
@@ -233,7 +160,7 @@ func TestFailClosed(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			start := time.Now()
-			resp, err := proxyHTTP.Get(base + "/containers/hang/json")
+			resp, err := mockHTTP.Get(base + "/containers/hang/json")
 			patientTook = time.Since(start)
 			if err != nil {
 				patientErr = err
@@ -245,7 +172,7 @@ func TestFailClosed(t *testing.T) {
 
 		// 50 impatient clients give up after 2s, leaving the proxy to
 		// clean up the abandoned upstream requests.
-		impatient := &http.Client{Timeout: 2 * time.Second}
+		impatient := unixClient(dialPath("proxy.sock"), 2*time.Second)
 		for range 50 {
 			wg.Add(1)
 			go func() {
@@ -270,7 +197,7 @@ func TestFailClosed(t *testing.T) {
 
 		// The proxy must still work normally after the storm.
 		if err := waitFor("proxy healthy after hang storm", func() error {
-			resp, err := proxyHTTP.Get(base + "/version")
+			resp, err := mockHTTP.Get(base + "/version")
 			if err != nil {
 				return err
 			}

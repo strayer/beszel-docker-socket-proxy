@@ -6,6 +6,7 @@
 package e2e
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -16,6 +17,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,8 +33,8 @@ const maxBody = 32 << 20
 var (
 	docker *engineClient // direct socket: the oracle and harness driver
 
-	proxyHTTP *http.Client
-	proxyBase string // http://127.0.0.1:<mapped port>
+	proxyHTTP *http.Client // dials the proxy's unix listen socket
+	proxyBase string       // http://proxy (host ignored; the client fixes the socket)
 
 	nonce  string
 	secret string // sentinel env value that must never cross the proxy
@@ -133,6 +136,15 @@ func run(m *testing.M) (int, error) {
 		return 1, fmt.Errorf("fixture image: %w", err)
 	}
 
+	// Resolve where the proxy's unix listen socket lives and how the test
+	// process reaches it (native host dir on Linux, shared volume when run
+	// in a container via e2e/run.sh).
+	sockCleanup, err := resolveSock()
+	if err != nil {
+		return 1, err
+	}
+	defer sockCleanup()
+
 	var started []string
 	defer func() {
 		for _, id := range started {
@@ -140,18 +152,20 @@ func run(m *testing.M) (int, error) {
 		}
 	}()
 
-	// The proxy container runs exactly as deployed: read-only socket,
-	// cap_drop ALL, read-only rootfs, no-new-privileges. Port 2375 is
-	// published to an ephemeral localhost port for the test client.
+	// Exactly as deployed: read-only socket, cap_drop ALL, read-only
+	// rootfs, no-new-privileges. The listen socket lands in the shared
+	// socket dir (default LISTEN_ADDR=/run/beszel/docker.sock). The test
+	// process is not root, so the socket needs LISTEN_SOCKET_MODE=0666 to
+	// be dialable from the host (this also exercises the env var on the
+	// real image; the default 0600 is covered by the unit tests).
 	proxyID, err := startContainer("bsp-e2e-proxy-"+nonce, map[string]any{
-		"Image":        proxyImage,
-		"ExposedPorts": map[string]any{"2375/tcp": map[string]any{}},
+		"Image": proxyImage,
+		"Env":   []string{"LISTEN_SOCKET_MODE=0666"},
 		"HostConfig": map[string]any{
-			"Binds":          []string{sock + ":/var/run/docker.sock:ro"},
+			"Binds":          []string{sock + ":/var/run/docker.sock:ro", sockMount},
 			"CapDrop":        []string{"ALL"},
 			"ReadonlyRootfs": true,
 			"SecurityOpt":    []string{"no-new-privileges:true"},
-			"PortBindings":   map[string]any{"2375/tcp": []map[string]string{{"HostIp": "127.0.0.1", "HostPort": ""}}},
 		},
 	})
 	if err != nil {
@@ -159,15 +173,8 @@ func run(m *testing.M) (int, error) {
 	}
 	started = append(started, proxyID)
 
-	port, err := mappedPort(proxyID, "2375/tcp")
-	if err != nil {
-		return 1, err
-	}
-	proxyBase = "http://127.0.0.1:" + port
-	proxyHTTP = &http.Client{
-		Timeout:       60 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	proxyBase = "http://proxy"
+	proxyHTTP = unixClient(dialPath(proxySockName), 60*time.Second)
 	if err := waitFor("proxy ready", func() error {
 		resp, err := proxyHTTP.Get(proxyBase + "/version")
 		if err != nil {
@@ -253,6 +260,85 @@ func ensureImage(img string) error {
 	return nil
 }
 
+// buildScratchImage cross-compiles the Go command at cmdDir for the
+// daemon's platform and packs the static binary into a FROM scratch image
+// via the Engine API, so no Go toolchain image is ever pulled. The binary
+// inside the image is named after cmdDir's base (e.g. ./socketbridge ->
+// /socketbridge).
+func buildScratchImage(cmdDir, tag string) error {
+	var ver struct{ Os, Arch string }
+	if err := docker.call("GET", "/version", nil, &ver, 200); err != nil {
+		return fmt.Errorf("daemon version: %w", err)
+	}
+
+	name := filepath.Base(cmdDir)
+	dir, err := os.MkdirTemp("", "bsp-build-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	bin := filepath.Join(dir, name)
+	cmd := exec.Command("go", "build", "-o", bin, cmdDir)
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+ver.Os, "GOARCH="+ver.Arch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("build %s: %w\n%s", cmdDir, err, out)
+	}
+	binData, err := os.ReadFile(bin)
+	if err != nil {
+		return err
+	}
+
+	dockerfile := "FROM scratch\nCOPY " + name + " /" + name + "\nENTRYPOINT [\"/" + name + "\"]\n"
+	var ctx bytes.Buffer
+	tw := tar.NewWriter(&ctx)
+	for _, f := range []struct {
+		name string
+		mode int64
+		data []byte
+	}{
+		{"Dockerfile", 0o644, []byte(dockerfile)},
+		{name, 0o755, binData},
+	} {
+		if err := tw.WriteHeader(&tar.Header{Name: f.name, Mode: f.mode, Size: int64(len(f.data))}); err != nil {
+			return err
+		}
+		if _, err := tw.Write(f.data); err != nil {
+			return err
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "http://docker/build?t="+tag, &ctx)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-tar")
+	resp, err := docker.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("image build: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	// The build endpoint streams JSON messages; failures appear as
+	// {"error": ...} lines rather than a non-200 status.
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var msg struct{ Error string }
+		if err := dec.Decode(&msg); err != nil {
+			break
+		}
+		if msg.Error != "" {
+			return fmt.Errorf("image build: %s", msg.Error)
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("image build: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func startContainer(name string, spec map[string]any) (string, error) {
 	var created struct{ Id string }
 	if err := docker.call("POST", "/containers/create?name="+name, spec, &created, 201); err != nil {
@@ -267,20 +353,18 @@ func startContainer(name string, spec map[string]any) (string, error) {
 	return created.Id, nil
 }
 
-func mappedPort(id, port string) (string, error) {
-	var info struct {
-		NetworkSettings struct {
-			Ports map[string][]struct{ HostPort string }
-		}
+// unixClient returns an HTTP client that dials the unix socket at sockPath.
+// The request URL's host is ignored.
+func unixClient(sockPath string, timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", sockPath)
+			},
+		},
 	}
-	if err := docker.call("GET", "/containers/"+id+"/json", nil, &info, 200); err != nil {
-		return "", err
-	}
-	bindings := info.NetworkSettings.Ports[port]
-	if len(bindings) == 0 || bindings[0].HostPort == "" {
-		return "", fmt.Errorf("no host binding for %s on %s", port, id)
-	}
-	return bindings[0].HostPort, nil
 }
 
 func waitFor(what string, probe func() error) error {
