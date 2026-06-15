@@ -17,8 +17,7 @@ COPY --from=build /proxy /proxy
 
 # Runs as root inside the container so it can read the Docker socket
 # regardless of the host's docker GID; deploy with cap_drop: ALL,
-# read_only and no-new-privileges (see README).
-
-EXPOSE 2375
+# read_only and no-new-privileges (see README). The proxy serves on a unix
+# socket inside a mounted volume (LISTEN_ADDR), not a TCP port.
 
 ENTRYPOINT ["/proxy"]

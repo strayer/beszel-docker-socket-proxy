@@ -50,10 +50,16 @@ Anything else → `403`.
 
 ## Design
 
-Pure Go, stdlib only: `httputil.ReverseProxy` over the unix socket, Go
-`ServeMux` allowlist routing, `Config.Env` stripped in `ModifyResponse`.
-On filter failure the proxy returns **502** and never forwards the
-unfiltered body. The final image is a single static binary `FROM scratch`.
+Pure Go, stdlib only: `httputil.ReverseProxy` over the upstream Docker
+socket, Go `ServeMux` allowlist routing, `Config.Env` stripped in
+`ModifyResponse`. On filter failure the proxy returns **502** and never
+forwards the unfiltered body. The final image is a single static binary
+`FROM scratch`.
+
+The proxy itself listens on a **unix domain socket** (no TCP port). The
+Beszel agent must run with `network_mode: host`, so it can't join a Docker
+network — a shared volume holding the socket is how it reaches the proxy
+without publishing a port on the host.
 
 Before settling on this implementation, nginx+Lua (OpenResty and Alpine)
 and nginx+njs body-filter prototypes were built and benchmarked. At
@@ -70,10 +76,13 @@ so their failure mode is a 200 with a stub body.
 
 | Env var | Default | |
 |---|---|---|
-| `SOCKET_PATH` | `/var/run/docker.sock` | Docker socket to proxy |
-| `LISTEN_ADDR` | `:2375` | listen address |
+| `SOCKET_PATH` | `/var/run/docker.sock` | upstream Docker socket to proxy |
+| `LISTEN_ADDR` | `/run/beszel/docker.sock` | path of the unix socket the proxy creates and serves on (a leading `unix:` is tolerated) |
+| `LISTEN_SOCKET_MODE` | `0600` | permission bits of the created socket (octal) |
 
-## Deployment (drop-in for Tecnativa)
+## Deployment
+
+The proxy serves on a unix socket inside a volume shared with the agent:
 
 ```yaml
 services:
@@ -82,31 +91,42 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - beszel-socket:/run/beszel
     cap_drop: [ALL]
     read_only: true
     security_opt: ["no-new-privileges:true"]
-    networks: [beszel-internal]
 
   beszel-agent:
     image: henrygd/beszel-agent
+    restart: unless-stopped
+    network_mode: host
     environment:
-      DOCKER_HOST: tcp://docker-socket-proxy:2375
+      DOCKER_HOST: unix:///run/beszel/docker.sock
       # ...
-    networks: [beszel-internal]
+    volumes:
+      - beszel-socket:/run/beszel
 
-networks:
-  beszel-internal:
-    internal: true
+volumes:
+  beszel-socket:
 ```
 
 Notes:
 
-- The container runs as root *inside* the container so it can read the
-  socket regardless of the host's `docker` GID, but with `cap_drop: ALL`,
+- The proxy creates its socket in the `beszel-socket` volume
+  (`LISTEN_ADDR`, default `/run/beszel/docker.sock`). Because the agent runs
+  `network_mode: host`, the shared volume — not a Docker network — is the
+  channel between them.
+- Both containers run as root, so the default socket mode `0600`
+  (root-owned) lets the agent use it while keeping it inaccessible to
+  anything else. If your agent runs as a non-root user, set
+  `LISTEN_SOCKET_MODE` to a group-writable mode (e.g. `0660` — connecting to
+  a unix socket needs write permission on it) and give both containers a
+  shared `group_add` instead.
+- The agent mounts the volume **read-write**: a client has to write to the
+  socket to send requests. The write protection against the Docker API is
+  the proxy's GET-only allowlist, not the mount.
+- The host socket is mounted `:ro`; the proxy runs with `cap_drop: ALL`,
   `no-new-privileges` and a read-only rootfs.
-- The `:ro` socket mount protects the socket *file*, not the API — the
-  proxy's GET-only allowlist is the actual write protection.
-- Don't publish the proxy port to the host; keep it on an internal network.
 
 ## Development
 
@@ -129,6 +149,15 @@ serves broken inspect responses (invalid JSON, >8 MiB, hangs):
 ```sh
 docker build -t beszel-socket-proxy:dev .
 PROXY_IMAGE=beszel-socket-proxy:dev go test ./e2e -tags e2e -v
+```
+
+The test dials the proxy's unix socket directly, which works on a Linux
+host (and CI). On macOS a bind-mounted unix socket isn't dialable from the
+host, so run the suite through the wrapper, which executes it in a
+container sharing a socket volume with the proxy:
+
+```sh
+PROXY_IMAGE=beszel-socket-proxy:dev ./e2e/run.sh -v
 ```
 
 The suite creates nonce-named throwaway containers (`bsp-e2e-*`) and

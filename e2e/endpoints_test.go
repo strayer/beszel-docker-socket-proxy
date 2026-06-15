@@ -4,9 +4,11 @@ package e2e
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -47,11 +49,41 @@ func TestInfo(t *testing.T) {
 	}
 }
 
-// stripVolatile removes list fields that may legitimately change between
-// the proxied and the direct call (e.g. "Up 5 seconds" -> "Up 6 seconds").
-func stripVolatile(list []any) {
+// normalizeList makes a container list comparable across two separate calls.
+// It drops the one volatile-valued field ("Status": "Up 5 seconds" ->
+// "Up 6 seconds") and canonicalizes the rest: Docker does not guarantee the
+// order of the top-level list nor of nested arrays (e.g. each entry's
+// Mounts), so those orderings differ between the proxied and direct calls
+// even though the content is identical.
+func normalizeList(list []any) any {
 	for _, c := range list {
 		delete(c.(map[string]any), "Status")
+	}
+	return canonicalize(list)
+}
+
+// canonicalize recursively sorts every array by its JSON encoding so that
+// order-insensitive structures compare equal. Object keys are already
+// canonical (encoding/json sorts map keys).
+func canonicalize(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, e := range x {
+			x[k] = canonicalize(e)
+		}
+		return x
+	case []any:
+		for i := range x {
+			x[i] = canonicalize(x[i])
+		}
+		sort.Slice(x, func(i, j int) bool {
+			bi, _ := json.Marshal(x[i])
+			bj, _ := json.Marshal(x[j])
+			return string(bi) < string(bj)
+		})
+		return x
+	default:
+		return v
 	}
 }
 
@@ -62,10 +94,8 @@ func TestContainerList(t *testing.T) {
 	}
 	_, dBody := directDo(t, http.MethodGet, "/containers/json")
 
-	pList := parseJSON(t, pBody).([]any)
-	dList := parseJSON(t, dBody).([]any)
-	stripVolatile(pList)
-	stripVolatile(dList)
+	pList := normalizeList(parseJSON(t, pBody).([]any))
+	dList := normalizeList(parseJSON(t, dBody).([]any))
 	// Identical (normalized) payload proves the list is not routed
 	// through the inspect filter.
 	if !reflect.DeepEqual(pList, dList) {
@@ -155,8 +185,10 @@ func TestInspect(t *testing.T) {
 		t.Errorf("Config.Env present in proxied inspect")
 	}
 	// Deep-equal to direct after del(.Config.Env): nothing else may change.
+	// Canonicalize first — the inspect doc also carries nondeterministically
+	// ordered arrays (e.g. Mounts) that differ between the two calls.
 	delete(dDoc["Config"].(map[string]any), "Env")
-	if !reflect.DeepEqual(pDoc, dDoc) {
+	if !reflect.DeepEqual(canonicalize(pDoc), canonicalize(dDoc)) {
 		t.Errorf("inspect diverges from direct beyond Env removal:\nproxy:  %s\ndirect: %s", pBody, dBody)
 	}
 
