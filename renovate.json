@@ -24,6 +24,16 @@
       "matchStrings": [
         "// renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\nconst fixtureImage = \"[^:\"]+:(?<currentValue>[^\"]+)\""
       ]
+    },
+    {
+      "customType": "regex",
+      "description": "Bump the Go toolchain image used by the e2e wrapper",
+      "fileMatch": ["^e2e/run\\.sh$"],
+      "matchStrings": [
+        "GO_IMAGE=\"\\$\\{GO_IMAGE:-golang:(?<currentValue>[0-9][0-9.]+)\\}\""
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "golang"
     }
   ]
 }
