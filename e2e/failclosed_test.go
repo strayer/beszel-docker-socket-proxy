@@ -120,6 +120,9 @@ func TestFailClosed(t *testing.T) {
 		if resp.StatusCode != http.StatusBadGateway {
 			t.Errorf("GET %s = %d, want 502", path, resp.StatusCode)
 		}
+		if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("GET %s: 502 Content-Type = %q, want application/json", path, ct)
+		}
 		if bytes.Contains(body, []byte(mockMarker)) {
 			t.Errorf("GET %s: upstream bytes leaked through failed filter", path)
 		}
