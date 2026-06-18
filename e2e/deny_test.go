@@ -83,6 +83,11 @@ func TestDenyMatrix(t *testing.T) {
 			t.Errorf("%s %s = %d, want 403", tc.method, tc.path, resp.StatusCode)
 			continue
 		}
+		// HEAD responses carry no body by HTTP semantics, so the deny
+		// stub is stripped; the 403 status is the only signal there.
+		if tc.method == http.MethodHead {
+			continue
+		}
 		if !bytes.Contains(body, []byte("forbidden")) {
 			t.Errorf("%s %s: deny body not from proxy: %s", tc.method, tc.path, body)
 		}
