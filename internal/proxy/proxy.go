@@ -57,6 +57,7 @@ func NewHandler(socketPath string) http.Handler {
 
 	errorHandler := func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("upstream error: %s %s: %v", r.Method, r.URL.Path, err)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
 		_, _ = w.Write([]byte(`{"message":"proxy: upstream error"}`))
 	}

@@ -158,6 +158,9 @@ func TestFailClosed(t *testing.T) {
 			if rec.Code != http.StatusBadGateway {
 				t.Fatalf("status = %d, want 502", rec.Code)
 			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("502 Content-Type = %q, want application/json", ct)
+			}
 			if bytes.Contains(rec.Body.Bytes(), []byte("SECRET-BYTES")) {
 				t.Fatalf("upstream body leaked through failed filter: %s", rec.Body.String())
 			}
