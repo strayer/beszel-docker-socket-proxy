@@ -68,6 +68,11 @@ func TestDenyMatrix(t *testing.T) {
 		{http.MethodPost, "/containers/" + envCtr.id + "/logs"},
 		{http.MethodPost, "/version"},
 		{http.MethodPost, "/info"},
+		// HEAD denied: Beszel uses GET only, and ServeMux would otherwise
+		// serve HEAD for every GET pattern.
+		{http.MethodHead, "/version"},
+		{http.MethodHead, "/containers/json"},
+		{http.MethodHead, "/containers/" + envCtr.id + "/json"},
 		// id charset violations
 		{http.MethodGet, "/containers/a%20b/json"},
 		{http.MethodGet, "/containers/a%00b/stats"},

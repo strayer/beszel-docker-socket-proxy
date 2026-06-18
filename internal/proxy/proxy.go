@@ -92,7 +92,22 @@ func NewHandler(socketPath string) http.Handler {
 	mux.Handle("GET /info", passthrough)
 	mux.HandleFunc("/", deny)
 
-	return mux
+	// Beszel uses GET exclusively. Deny every other method up front: Go's
+	// ServeMux otherwise serves HEAD for each GET pattern, which would let
+	// HEAD requests reach the daemon (and route into the inspect filter).
+	return getOnly(mux)
+}
+
+// getOnly denies any request whose method is not GET before it reaches the
+// routing table.
+func getOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			deny(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // stripEnvFromInspect removes Config.Env from a container inspect response.
