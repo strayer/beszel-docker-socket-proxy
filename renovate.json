@@ -14,6 +14,12 @@
       "matchManagers": ["gomod"],
       "matchDepNames": ["go"],
       "rangeStrategy": "bump"
+    },
+    {
+      "description": "e2e helper images are tracked by tag only; the regex managers have no digest slot, so docker:pinDigests fails to update them",
+      "matchManagers": ["custom.regex"],
+      "matchDatasources": ["docker"],
+      "pinDigests": false
     }
   ],
   "customManagers": [
