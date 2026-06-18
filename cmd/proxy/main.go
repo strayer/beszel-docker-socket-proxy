@@ -3,11 +3,13 @@
 package main
 
 import (
-	"errors"
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/strayer/beszel-docker-socket-proxy/internal/proxy"
@@ -46,8 +48,11 @@ func main() {
 		MaxHeaderBytes: 16 << 10,
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	log.Printf("listening on %s, proxying %s", ln.Addr(), socketPath)
-	if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := proxy.Serve(ctx, server, ln, 10*time.Second); err != nil {
 		log.Fatal(err)
 	}
 }
