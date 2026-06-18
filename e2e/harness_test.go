@@ -26,7 +26,7 @@ import (
 
 // fixtureImage is the image used for the fixture containers.
 // renovate: datasource=docker depName=alpine
-const fixtureImage = "alpine:3.23.4"
+const fixtureImage = "alpine:3.24.1"
 
 const maxBody = 32 << 20
 
