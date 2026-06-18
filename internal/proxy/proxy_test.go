@@ -288,6 +288,14 @@ func TestRoutingDenied(t *testing.T) {
 		{http.MethodPost, "/containers/abc123/logs"},
 		{http.MethodPost, "/version"},
 		{http.MethodPost, "/info"},
+		// HEAD must be denied too: Beszel uses GET only, and Go's
+		// ServeMux otherwise serves HEAD for every GET pattern.
+		{http.MethodHead, "/version"},
+		{http.MethodHead, "/info"},
+		{http.MethodHead, "/containers/json"},
+		{http.MethodHead, "/containers/abc123/json"},
+		{http.MethodHead, "/containers/abc123/stats"},
+		{http.MethodHead, "/containers/abc123/logs"},
 		// trailing additions
 		{http.MethodGet, "/containers/json/extra"},
 		{http.MethodGet, "/containers/abc123/json/extra"},
