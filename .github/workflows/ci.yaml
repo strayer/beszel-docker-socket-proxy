@@ -88,14 +88,16 @@ jobs:
           dockerfile=$(sed -n 's/^FROM .*golang:\([0-9][0-9.]*\).*/\1/p' Dockerfile)
           gomod=$(sed -n 's/^go \([0-9][0-9.]*\)$/\1/p' go.mod)
           mise=$(sed -n 's/^go = "\([0-9][0-9.]*\)"$/\1/p' mise.toml)
+          runsh=$(sed -n 's/.*golang:\([0-9][0-9.]*\).*/\1/p' e2e/run.sh)
           echo "Dockerfile: ${dockerfile:-<not found>}"
           echo "go.mod:     ${gomod:-<not found>}"
           echo "mise.toml:  ${mise:-<not found>}"
-          if [ -z "$dockerfile" ] || [ -z "$gomod" ] || [ -z "$mise" ]; then
+          echo "e2e/run.sh: ${runsh:-<not found>}"
+          if [ -z "$dockerfile" ] || [ -z "$gomod" ] || [ -z "$mise" ] || [ -z "$runsh" ]; then
             echo "::error::Failed to extract a Go version from one or more files"
             exit 1
           fi
-          if [ "$dockerfile" != "$gomod" ] || [ "$gomod" != "$mise" ]; then
+          if [ "$dockerfile" != "$gomod" ] || [ "$gomod" != "$mise" ] || [ "$mise" != "$runsh" ]; then
             echo "::error::Go versions are out of sync"
             exit 1
           fi
