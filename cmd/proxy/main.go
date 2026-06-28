@@ -4,7 +4,10 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,6 +29,15 @@ const (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		addr := envOr("LISTEN_ADDR", defaultListenAddr)
+		if err := healthcheck(proxy.SocketPath(addr)); err != nil {
+			log.Printf("healthcheck: %v", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	socketPath := envOr("SOCKET_PATH", defaultSocketPath)
 	listenAddr := envOr("LISTEN_ADDR", defaultListenAddr)
 
@@ -55,6 +67,30 @@ func main() {
 	if err := proxy.Serve(ctx, server, ln, 10*time.Second); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// healthcheck dials the proxy's own listen socket and performs GET /version,
+// returning nil only on a 200 response. It is the container HEALTHCHECK: the
+// scratch image has no shell or curl, so the binary checks itself.
+func healthcheck(sock string) error {
+	client := &http.Client{
+		Timeout: 3 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+			},
+		},
+	}
+	resp, err := client.Get("http://proxy/version")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func envOr(key, fallback string) string {
