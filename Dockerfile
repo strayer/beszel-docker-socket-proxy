@@ -20,4 +20,7 @@ COPY --from=build /proxy /proxy
 # read_only and no-new-privileges (see README). The proxy serves on a unix
 # socket inside a mounted volume (LISTEN_ADDR), not a TCP port.
 
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD ["/proxy", "healthcheck"]
+
 ENTRYPOINT ["/proxy"]

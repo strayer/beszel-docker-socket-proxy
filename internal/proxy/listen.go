@@ -58,6 +58,11 @@ func Listen(addr string, mode os.FileMode) (net.Listener, error) {
 	return ln, nil
 }
 
+// SocketPath resolves a listen address to its filesystem socket path,
+// identically to Listen, so callers (e.g. the healthcheck) dial the exact
+// path the server binds.
+func SocketPath(addr string) string { return socketPath(addr) }
+
 // socketPath strips an optional unix:[//] scheme from addr.
 func socketPath(addr string) string {
 	if rest, ok := strings.CutPrefix(addr, "unix:"); ok {
