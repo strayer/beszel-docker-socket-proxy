@@ -180,3 +180,7 @@ a weekly scheduled job scans the binary inside the *latest published image*
 so a disclosure between releases still surfaces. Renovate keeps the Go
 toolchain (and everything else) current — the fix for a finding is merging
 the already-open Renovate PR and tagging.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Sven Grunewaldt.
