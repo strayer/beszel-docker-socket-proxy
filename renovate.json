@@ -26,7 +26,9 @@
     {
       "customType": "regex",
       "description": "Bump the e2e fixture image pinned in the test harness",
-      "fileMatch": ["^e2e/harness_test\\.go$"],
+      "managerFilePatterns": [
+        "/^e2e/harness_test\\.go$/"
+      ],
       "matchStrings": [
         "// renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\nconst fixtureImage = \"[^:\"]+:(?<currentValue>[^\"]+)\""
       ]
@@ -34,7 +36,9 @@
     {
       "customType": "regex",
       "description": "Bump the Go toolchain image used by the e2e wrapper",
-      "fileMatch": ["^e2e/run\\.sh$"],
+      "managerFilePatterns": [
+        "/^e2e/run\\.sh$/"
+      ],
       "matchStrings": [
         "GO_IMAGE=\"\\$\\{GO_IMAGE:-golang:(?<currentValue>[0-9][0-9.]+)\\}\""
       ],
