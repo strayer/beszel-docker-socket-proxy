@@ -10,7 +10,7 @@ set -eu
 : "${PROXY_IMAGE:?set PROXY_IMAGE to the proxy image under test}"
 
 # Keep the toolchain image in sync with go.mod / the Dockerfile builder.
-GO_IMAGE="${GO_IMAGE:-golang:1.26.4}"
+GO_IMAGE="${GO_IMAGE:-golang:1.27.1}"
 DOCKER_SOCK="${DOCKER_SOCK:-/var/run/docker.sock}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 vol="bsp-e2e-sock-$$"
