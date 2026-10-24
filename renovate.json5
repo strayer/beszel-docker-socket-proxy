@@ -3,21 +3,32 @@
   "extends": [
     "config:recommended",
     ":disableRateLimiting",
-    "docker:pinDigests"
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigests"
   ],
+  "labels": ["dependencies"],
+  "rangeStrategy": "pin",
+  "automerge": true,
+  "automergeType": "pr",
+  "automergeStrategy": "squash",
+  "platformAutomerge": true,
   "packageRules": [
+    { "matchManagers": ["github-actions"], "groupName": "GitHub Actions" },
     {
-      "groupName": "go",
-      "description": "Toolchain bump: Go itself plus golangci-lint, which must be built with a Go version at least as new as the one it lints",
-      "matchDepNames": ["go", "golang", "golangci-lint"]
+      // Go toolchain and the dev tools built against it move together: a newer Go
+      // needs a golangci-lint built with it, and Go version sync needs all pins equal
+      "groupName": "Go toolchain",
+      "matchDepNames": ["go", "golang"]
     },
+    { "groupName": "Go toolchain", "matchManagers": ["mise"] },
     {
-      "matchManagers": ["gomod"],
-      "matchDepNames": ["go"],
-      "rangeStrategy": "bump"
+      // without this the gomod manager never bumps the go directive
+      "matchManagers": ["gomod"], "matchDepNames": ["go"], "rangeStrategy": "bump"
     },
+    { "matchUpdateTypes": ["major"], "automerge": false },
     {
-      "description": "e2e helper images are tracked by tag only; the regex managers have no digest slot, so docker:pinDigests fails to update them",
+      // e2e helper images are tracked by tag only; the regex managers have no digest
+      // slot, so docker:pinDigests fails to update them
       "matchManagers": ["custom.regex"],
       "matchDatasources": ["docker"],
       "pinDigests": false

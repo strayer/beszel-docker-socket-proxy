@@ -28,7 +28,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Extract binary from latest published image
         run: |
+          # :latest only exists once a stable (non-prerelease) tag was released;
+          # until then fall back to :dev, built from main on every push.
           image=ghcr.io/${{ github.repository }}:latest
+          if ! docker manifest inspect "$image" > /dev/null 2>&1; then
+            echo "::notice::No :latest image published yet, scanning :dev instead"
+            image=ghcr.io/${{ github.repository }}:dev
+          fi
           docker pull "$image"
           id=$(docker create "$image")
           docker cp "$id":/proxy ./published-proxy

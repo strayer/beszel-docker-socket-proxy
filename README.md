@@ -136,8 +136,9 @@ Tooling is pinned in `mise.toml` (`mise install`); hooks in
 `.pre-commit-config.yaml`.
 
 ```sh
-go test ./... -cover        # unit tests (filter, fail-closed, routing table)
-go vet ./... && golangci-lint run --build-tags e2e
+mise run test               # unit tests (filter, fail-closed, routing table)
+mise run lint               # goimports check, go vet, golangci-lint, govulncheck
+mise run format             # goimports -w
 ```
 
 ### E2E suite
@@ -177,8 +178,8 @@ Because the image has zero third-party dependencies, its entire
 vulnerability surface is the Go standard library and toolchain. That is
 exactly what `govulncheck` tracks: it runs in source mode on every PR, and
 a weekly scheduled job scans the binary inside the *latest published image*
-so a disclosure between releases still surfaces. Renovate keeps the Go
-toolchain (and everything else) current — the fix for a finding is merging
+(or `dev` until a stable release exists) so a disclosure between
+releases still surfaces. Renovate keeps the Go toolchain (and everything else) current — the fix for a finding is merging
 the already-open Renovate PR and tagging.
 
 ## License
