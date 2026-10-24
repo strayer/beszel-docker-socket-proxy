@@ -184,7 +184,7 @@ the already-open Renovate PR and tagging.
 
 ### Releasing
 
-Label every PR with one of `breaking`, `feature`, `enhancement`, `bug` or
+Label every PR with one of `breaking`, `feature`, `enhancement`, `bug`, `chore` or
 `dependencies` (enforced by the `require-release-label` check); the labels
 drive the semver bump and the GitHub Release notes. To release, run
 `scripts/release.sh` (`--rc` for a pre-release, or pass an explicit
