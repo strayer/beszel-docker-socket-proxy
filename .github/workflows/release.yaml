@@ -6,9 +6,42 @@ on:
       - 'v*'
 
 jobs:
+  verify-tag:
+    name: Verify signed tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify signed tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME")
+          if [ "$(jq -r '.object.type' <<<"$ref")" != "tag" ]; then
+            echo "::error::$GITHUB_REF_NAME is a lightweight tag; only signed annotated tags may be released"
+            exit 1
+          fi
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r '.object.sha' <<<"$ref")")
+          if [ "$(jq -r '.verification.verified' <<<"$tag")" != "true" ]; then
+            echo "::error::tag $GITHUB_REF_NAME signature not verified (reason: $(jq -r '.verification.reason' <<<"$tag"))"
+            exit 1
+          fi
+          # Bind the signed tag object to this ref and build: the signed-in name
+          # must match the pushed ref, and the tag must point at the exact commit
+          # being built. Prevents replaying an old signed tag under a new name.
+          if [ "$(jq -r '.tag' <<<"$tag")" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::signed tag name '$(jq -r '.tag' <<<"$tag")' does not match pushed ref $GITHUB_REF_NAME"
+            exit 1
+          fi
+          if [ "$(jq -r '.object.type' <<<"$tag")" != "commit" ] || [ "$(jq -r '.object.sha' <<<"$tag")" != "$GITHUB_SHA" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not point at the commit being built ($GITHUB_SHA)"
+            exit 1
+          fi
+
   # The published image must have passed the full e2e suite as built.
   e2e:
     name: E2E gate
+    needs: verify-tag
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,7 +63,7 @@ jobs:
           PROXY_IMAGE=candidate:${{ github.sha }} go test ./e2e -tags e2e -v
 
   build:
-    needs: e2e
+    needs: [verify-tag, e2e]
     uses: docker/github-builder/.github/workflows/build.yml@5f637c833aa76bc99372a1dc9a6f8bcd8056fb85 # v1.12.0
     permissions:
       contents: read
@@ -57,3 +90,27 @@ jobs:
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+  github-release:
+    name: GitHub release
+    needs: [verify-tag, e2e, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      IMAGE: ghcr.io/${{ github.repository }}
+      DIGEST: ${{ needs.build.outputs.digest }}
+    steps:
+      - name: Create release
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          flags=()
+          case "$GITHUB_REF_NAME" in
+            *-rc*) flags+=(--prerelease) ;;
+          esac
+          # shellcheck disable=SC2016 # backticks are literal markdown fences
+          notes=$(printf '## Container image\n\n```\n%s:%s\n%s@%s\n```\n' \
+            "$IMAGE" "$version" "$IMAGE" "$DIGEST")
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --generate-notes --notes "$notes" "${flags[@]}"

@@ -182,6 +182,15 @@ a weekly scheduled job scans the binary inside the *latest published image*
 releases still surfaces. Renovate keeps the Go toolchain (and everything else) current — the fix for a finding is merging
 the already-open Renovate PR and tagging.
 
+### Releasing
+
+Label every PR with one of `breaking`, `feature`, `enhancement`, `bug` or
+`dependencies` (enforced by the `require-release-label` check); the labels
+drive the semver bump and the GitHub Release notes. To release, run
+`scripts/release.sh` (`--rc` for a pre-release, or pass an explicit
+version). It creates and pushes a signed annotated tag, and the release
+workflow does the rest, creating the GitHub Release with the image reference.
+
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Sven Grunewaldt.
